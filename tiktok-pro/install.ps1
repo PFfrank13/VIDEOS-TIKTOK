@@ -34,4 +34,4 @@ Write-Host "Instalando edge-tts (voz del narrador)..." -ForegroundColor Cyan
 python -m pip install --upgrade edge-tts
 
 Write-Host "`nListo. En Claude Code escribe:  /tiktok-pro C:/ruta/a/tu_video.mp4" -ForegroundColor Cyan
-Write-Host "Solo filtros, sin intro/rotulos/narrador:  /tiktok-pro C:/ruta/video.mp4 --simple" -ForegroundColor Cyan
+Write-Host "Con intro, rotulos y narrador:  /tiktok-pro C:/ruta/video.mp4 --director" -ForegroundColor Cyan

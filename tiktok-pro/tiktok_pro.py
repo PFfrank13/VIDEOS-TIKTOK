@@ -29,7 +29,7 @@ OUT_W, OUT_H, FPS = 1080, 1920, 60
 ZOOM_MIN, ZOOM_MAX = 1.04, 1.10
 MIN_SCENE_SEC = 0.5          # ignora cortes demasiado juntos
 MAX_SCENES = 400             # límite de seguridad para la expresión
-DARK_Y, BRIGHT_Y = 72, 105   # umbrales de luminancia media (0-255)
+DARK_Y, BRIGHT_Y, HOT_Y = 72, 105, 175   # umbrales de luminancia media (0-255)
 
 # Perfiles de grading (director's cut). "bright" = receta Vibrant Cinema HDR exacta.
 GRADES = {
@@ -37,14 +37,21 @@ GRADES = {
     # algo menos de saturación para no ensuciar el ruido de color, viñeta suave.
     "dark": {
         "curves": "curves=m='0/0.035 0.10/0.13 0.30/0.36 0.55/0.62 0.80/0.86 1/0.98'",
-        "eq": "eq=contrast=1.05:saturation=1.16:brightness=0.03:gamma=1.10",
+        "eq": "eq=contrast=1.05:saturation=1.10:brightness=0.03:gamma=1.10",
         "vignette": "vignette=PI/8",
     },
     # Medios: contraste medio + vibrancia completa.
     "mid": {
         "curves": "curves=preset=medium_contrast",
-        "eq": "eq=contrast=1.10:saturation=1.22:brightness=0.02",
+        "eq": "eq=contrast=1.10:saturation=1.12:brightness=0.02",
         "vignette": "vignette=PI/6",
+    },
+    # Muy brillantes (explosiones, rayos, cielos quemados): comprime altas luces
+    # para recuperar detalle en vez de quemarlo a blanco.
+    "hot": {
+        "curves": "curves=preset=none",
+        "eq": "eq=gamma=0.85:saturation=1.35:contrast=1.04",
+        "vignette": "vignette=PI/9",
     },
     # Brillantes: receta original.
     "bright": {
@@ -143,7 +150,8 @@ def classify_scenes(cuts, dur, samples):
             out.append((out[-1][0] if out else "mid", None))
             continue
         med = vals[len(vals) // 2]
-        tier = "dark" if med < DARK_Y else ("bright" if med > BRIGHT_Y else "mid")
+        tier = ("dark" if med < DARK_Y else "hot" if med > HOT_Y
+                else "bright" if med > BRIGHT_Y else "mid")
         out.append((tier, med))
     return out
 
@@ -176,28 +184,37 @@ def _enable_expr(intervals):
     return "+".join(f"gte(t\\,{a:.3f})*lt(t\\,{b:.3f})" for a, b in intervals)
 
 
-def build_video_filter(cuts, params, tiers, dur, grade_mode="auto"):
+def build_video_filter(cuts, params, tiers, dur, grade_mode="auto", crop=None):
+    """crop=(w,h,x,y) del contenido real. Si el vídeo trae letterbox, se procesa solo
+    la imagen y se devuelve sobre negro puro (sin barras ruidosas ni rellenos)."""
     frames = [int(round(t * FPS)) for t in cuts]
-    zs = [p[0] for p in params]
-    oxs = [p[1] for p in params]
-    oys = [p[2] for p in params]
-    z_e = piecewise(frames, zs)
-    ox_e = piecewise(frames, oxs)
-    oy_e = piecewise(frames, oys)
-    # x = centro + desplazamiento * margen libre (iw - iw/zoom)
+    z_e = piecewise(frames, [p[0] for p in params])
+    ox_e = piecewise(frames, [p[1] for p in params])
+    oy_e = piecewise(frames, [p[2] for p in params])
     x_e = f"(iw-iw/zoom)/2+({ox_e})*(iw-iw/zoom)"
     y_e = f"(ih-ih/zoom)/2+({oy_e})*(ih-ih/zoom)"
-    chain = [
-        "setpts=PTS-STARTPTS",
-        # limpieza ligera de artefactos de compresión antes de enfocar
-        "hqdn3d=1.2:1.2:2.5:2.5",
+
+    letterbox = crop is not None and crop[0] / crop[1] > 0.75
+    if letterbox:
+        cw, ch, cx, cy = crop
+        fw, fh = OUT_W, int(round(OUT_W * ch / cw / 2) * 2)
+        geo = [f"crop={cw}:{ch}:{cx}:{cy}", f"scale={fw}:{fh}:flags=lanczos"]
+    else:
+        fw, fh = OUT_W, OUT_H
+        geo = [f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
+               f"crop={OUT_W}:{OUT_H}"]
+
+    chain = ["setpts=PTS-STARTPTS"]
+    if crop is not None and letterbox:
+        chain.append(geo.pop(0))
+    chain += [
+        # limpieza de artefactos de compresión antes de enfocar
+        "hqdn3d=2:1.5:1.2:1.2",
         f"fps={FPS}",
-        # cubrir 1080x1920 sin bandas negras
-        f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
-        f"crop={OUT_W}:{OUT_H}",
+    ] + geo + [
         "setsar=1",
         # micro-zoom por escena + reencuadre (1 frame de salida por frame de entrada)
-        f"zoompan=z='{z_e}':x='{x_e}':y='{y_e}':d=1:s={OUT_W}x{OUT_H}:fps={FPS}",
+        f"zoompan=z='{z_e}':x='{x_e}':y='{y_e}':d=1:s={fw}x{fh}:fps={FPS}",
     ]
 
     # Vibrant Cinema HDR (adaptativo por escena)
@@ -213,15 +230,39 @@ def build_video_filter(cuts, params, tiers, dur, grade_mode="auto"):
             f = GRADES[tier][key]
             chain.append(f if single else f"{f}:enable='{_enable_expr(iv)}'")
     chain += [
-        "unsharp=5:5:0.8:5:5:0.0",
-        # Grano (cambia el hash de cada fotograma)
-        "noise=alls=4:allf=t+u",
+        "vibrance=intensity=0.15",
+        # nitidez: CAS (adaptativo, sin halos) + unsharp de luma fino
+        "cas=strength=0.7",
+        "unsharp=3:3:0.5:3:3:0.0",
+        # grano fino (cambia el hash de cada fotograma)
+        "noise=alls=3:allf=t+u",
     ]
     for tier, iv in by_tier.items():
         f = GRADES[tier]["vignette"]
         chain.append(f if single else f"{f}:enable='{_enable_expr(iv)}'")
+    if letterbox:
+        chain.append(f"pad={OUT_W}:{OUT_H}:0:({OUT_H}-{fh})/2:black")
     chain += ["setsar=1", "format=yuv420p"]
     return ",".join(chain)
+
+
+def detect_crop(src):
+    """Recorte del contenido real (ignora letterbox/pillarbox) o None."""
+    r = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", src, "-an", "-vf",
+         "fps=2,cropdetect=limit=24:round=4:reset=1", "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    crops = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", r.stderr)
+    if not crops:
+        return None
+    c = tuple(int(v) for v in max(set(crops), key=crops.count))
+    v = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=width,height", "-of", "csv=p=0", src],
+                       capture_output=True, text=True).stdout.strip().split(",")
+    iw, ih = int(v[0]), int(v[1])
+    if c[0] >= iw * 0.97 and c[1] >= ih * 0.97:
+        return None
+    return c
 
 
 # Micro-EQ imperceptible (±0.3-0.6 dB): no toca tempo ni tono.
@@ -259,12 +300,17 @@ def main():
     print(f"[tiktok-pro] Entrada: {src}  ({dur:.2f}s, audio={'sí' if has_audio else 'no'})")
 
     print("[tiktok-pro] 1/4 Detectando escenas...")
-    cuts = detect_scenes(src, a.threshold, dur)
+    crop = detect_crop(src)
+    pre = f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}," if crop else ""
+    if crop:
+        print(f"[tiktok-pro]     Letterbox detectado: imagen real {crop[0]}x{crop[1]} (se procesa solo la imagen)")
+    import director  # detector robusto a cámara en mano
+    cuts = director.detect_cuts(director.scene_scores(src, pre), dur)
     print(f"[tiktok-pro]     {len(cuts) + 1} escenas; cortes en: "
           + (", ".join(f"{t:.2f}s" for t in cuts) or "ninguno"))
 
     print("[tiktok-pro]     Midiendo luminancia por escena...")
-    tiers = classify_scenes(cuts, dur, measure_luma(src, dur))
+    tiers = classify_scenes(cuts, dur, measure_luma(src, dur, pre))
 
     rng = random.Random(a.seed)
     params = scene_params(len(cuts) + 1, rng)
@@ -275,7 +321,7 @@ def main():
         print(f"[tiktok-pro]     escena {i + 1:>3} @ {start:7.2f}s  zoom {z:.3f}x  "
               f"reencuadre ({ox:+.2f},{oy:+.2f})  luma {ytxt}  grade {g}")
 
-    vf = build_video_filter(cuts, params, tiers, dur, a.grade)
+    vf = build_video_filter(cuts, params, tiers, dur, a.grade, crop)
     cmd = ["ffmpeg", "-hide_banner", "-y", "-i", src,
            "-map", "0:v:0"]
     if has_audio:

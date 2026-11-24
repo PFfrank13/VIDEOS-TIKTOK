@@ -343,7 +343,7 @@ def render(src, work, plan_path, seed=None, out=None):
     oy_e = piecewise_frames(bps, [s[4] for s in segs])
     grade = []
     single = len({s[5] for s in segs}) == 1
-    for tier in ("dark", "mid", "bright"):
+    for tier in ("dark", "mid", "bright", "hot"):
         iv = "+".join(f"between(t,{s[0]:.3f},{s[1] - 0.001:.3f})" for s in segs if s[5] == tier)
         if not iv:
             continue

@@ -17,9 +17,12 @@ verifica/instala FFmpeg (`winget install --id Gyan.FFmpeg -e`), Python y `edge-t
 
 **Usar:** en Claude Code, `/tiktok-pro C:/ruta/video.mp4` → genera `video_tiktok_pro.mp4`.
 
-Modo director (por defecto): Claude analiza el vídeo (`director.py analyze`), escribe un
+Por defecto genera una versión **limpia**: sin textos ni escenas añadidas, solo más
+nitidez (CAS + unsharp), color adaptativo por escena y letterbox respetado.
+
+Modo director (`--director`): Claude analiza el vídeo (`director.py analyze`), escribe un
 `plan.json` con intro, rótulos por escena, punch-zoom, cierre y guion del narrador, y lo
 renderiza (`director.py render`): clip sin letterbox con fondo desenfocado, grading por
 escena, voz neural (edge-tts), diseño sonoro, ducking y −14 LUFS.
 
-Solo filtros (sin intro/rótulos/narrador): `/tiktok-pro C:/ruta/video.mp4 --simple`.
+Con intro/rótulos/narrador: `/tiktok-pro C:/ruta/video.mp4 --director`.
