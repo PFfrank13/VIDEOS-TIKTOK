@@ -87,11 +87,12 @@ def probe(path):
     return dur, has_audio
 
 
-def detect_scenes(path, threshold, dur=None):
+def detect_scenes(path, threshold, dur=None, pre=""):
+    """pre: filtros previos opcionales, p.ej. 'crop=1080:808:0:556,' para ignorar letterbox."""
     """Devuelve lista ordenada de tiempos (s) donde empieza una escena nueva."""
     times = []
     # scdet usa umbral 0-100; select usa 0-1.
-    scd = f"scale=320:-2,scdet=threshold={threshold * 100:.1f}:sc_pass=0"
+    scd = f"{pre}scale=320:-2,scdet=threshold={threshold * 100:.1f}:sc_pass=0"
     r = subprocess.run(
         ["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-an", "-sn",
          "-vf", scd, "-f", "null", "-"],
@@ -99,7 +100,7 @@ def detect_scenes(path, threshold, dur=None):
     times = [float(m) for m in re.findall(r"lavfi\.scd\.time:\s*([0-9.]+)", r.stderr)]
     if r.returncode != 0 or not times:
         # Respaldo universal
-        sel = f"scale=320:-2,select='gt(scene\\,{threshold})',showinfo"
+        sel = f"{pre}scale=320:-2,select='gt(scene\\,{threshold})',showinfo"
         r2 = subprocess.run(
             ["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-an", "-sn",
              "-vf", sel, "-f", "null", "-"],
@@ -117,10 +118,10 @@ def detect_scenes(path, threshold, dur=None):
     return cleaned[:MAX_SCENES]
 
 
-def measure_luma(path, dur):
+def measure_luma(path, dur, pre=""):
     """Luminancia media (0-255) muestreada a 4 fps sobre el 60% central del
     encuadre (ignora bandas negras / letterbox). Devuelve [(t, yavg), ...]."""
-    vf = ("fps=4,crop=iw*0.8:ih*0.6,scale=160:-2,signalstats,"
+    vf = (f"{pre}fps=4,crop=iw*0.8:ih*0.6,scale=160:-2,signalstats,"
           "metadata=print:key=lavfi.signalstats.YAVG")
     r = subprocess.run(
         ["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-an", "-sn",
